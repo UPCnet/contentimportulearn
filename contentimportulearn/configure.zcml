@@ -15,7 +15,7 @@
       name="import_content"
       for="zope.interface.Interface"
       class=".import_content.CustomImportContent"
-      layer="contentimportulearn.interfaces.IcontentimportulearnLayer"
+      layer="contentimportulearn.interfaces.IContentimportLayer"
       permission="cmf.ManagePortal"
       />
 
@@ -23,7 +23,7 @@
       name="import_settings"
       for="zope.interface.Interface"
       class=".import_settings.ImportSettings"
-      layer="contentimportulearn.interfaces.IcontentimportulearnLayer"
+      layer="contentimportulearn.interfaces.IContentimportLayer"
       permission="cmf.ManagePortal"
       />
 

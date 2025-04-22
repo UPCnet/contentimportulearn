@@ -307,6 +307,23 @@ class CustomImportContent(ImportContent):
                 alsoProvides(obj, iface)
         return obj, item
         """
+        if item['@type'] == 'ulearn.community':
+            acl = item['acl']
+
+            # Permisos ACL
+            adapter = obj.adapted()
+            adapter.update_acl(acl)
+
+            try:
+                adapter.set_plone_permissions(acl)
+            except Exception:
+                if acl.get('groups') == u'':
+                            acl['groups'] = []
+                            adapter.set_plone_permissions(acl)
+
+                adapter.update_hub_subscriptions()
+
+
         # if item['@type'] == 'genweb.tfemarket.offer':
         #     titulacions, topics, tags = self.dict_hook_tfe_offer(item)
 
@@ -667,13 +684,13 @@ class CustomImportContent(ImportContent):
                 else:
                     raise error
         except Exception as e:
-            # Genweb6 añadimos titulo aunque no tenga
+            # Ulearn añadimos titulo aunque no tenga
             if str(e) == "[{'message': 'Required input is missing.', 'field': 'title', 'error': 'ValidationError'}]":
                 new.title = item["id"]
                 logger.warning(
                     "Required input is missing - Cannot title %s", item["@id"])
-            elif "{'message': 'Constraint not satisfied', 'field': 'degree_id', 'error': 'ValidationError'}" in str(e):
-                new.degree_id = item["degree_id"]
+            elif "{'message': 'Object is of wrong type.', 'field': 'mails_users_community_black_lists', 'error': 'ValidationError'}" in str(e):
+                new.mails_users_community_black_lists = item["mails_users_community_black_lists"]
             elif "{'message': 'Constraint not satisfied', 'field': 'offer_type', 'error': 'ValidationError'}" in str(e):
                 new.offer_type = item["offer_type"]
             elif "{'message': 'Constraint not satisfied', 'field': 'modality', 'error': 'ValidationError'}" in str(e):

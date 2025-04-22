@@ -3,7 +3,7 @@ from bs4 import BeautifulSoup
 from collective.exportimport.fix_html import fix_html_in_content_fields
 from collective.exportimport.fix_html import fix_html_in_portlets
 from collective.exportimport.fix_html import fix_tag_attr
-from contentimport.interfaces import IContentimportLayer
+from contentimportulearn.interfaces import IContentimportLayer
 from logging import getLogger
 from pathlib import Path
 from plone import api

@@ -84,7 +84,7 @@ class ImportControlpanels(BrowserView):
             logger.info(f"Imported record {key}: {value} to controlpanel: plone.app.controlpanel.mail.IMailSchema")
 
         for key, value in data["controlpanel"]["plone.app.controlpanel.site.ISiteSchema"].items():
-            from plone.base.interfaces.controlpanel import ISiteSchema
+            from Products.CMFPlone.interfaces.controlpanel import ISiteSchema
             registry = getUtility(IRegistry)
             sitesettings = registry.forInterface(ISiteSchema, prefix="plone", check=False)
             setattr(sitesettings, key, value)
