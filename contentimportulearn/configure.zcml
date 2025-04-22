@@ -1,0 +1,86 @@
+<configure xmlns="http://namespaces.zope.org/zope"
+           xmlns:genericsetup="http://namespaces.zope.org/genericsetup"
+           xmlns:zcml="http://namespaces.zope.org/zcml"
+           xmlns:browser="http://namespaces.zope.org/browser">
+
+  <genericsetup:registerProfile
+      name="default"
+      title="Custom content-import using collective.exportimport"
+      directory="profiles/default"
+      description=""
+      provides="Products.GenericSetup.interfaces.EXTENSION"
+      />
+
+  <browser:page
+      name="import_content"
+      for="zope.interface.Interface"
+      class=".import_content.CustomImportContent"
+      layer="contentimportulearn.interfaces.IcontentimportulearnLayer"
+      permission="cmf.ManagePortal"
+      />
+
+  <browser:page
+      name="import_settings"
+      for="zope.interface.Interface"
+      class=".import_settings.ImportSettings"
+      layer="contentimportulearn.interfaces.IcontentimportulearnLayer"
+      permission="cmf.ManagePortal"
+      />
+
+  <browser:page
+      name="import_controlpanels"
+      for="zope.interface.Interface"
+      class=".import_controlpanels.ImportControlpanels"
+      layer="contentimportulearn.interfaces.IContentimportLayer"
+      permission="cmf.ManagePortal"
+      />
+
+  <browser:page
+      name="import_all"
+      for="*"
+      class=".views.ImportAll"
+      template="templates/import_all.pt"
+      permission="cmf.ManagePortal"
+      />
+
+  <browser:page
+      name="import_portlets"
+      for="zope.interface.Interface"
+      class=".import_other.CustomImportPortlets"
+      layer="contentimportulearn.interfaces.IContentimportLayer"
+      permission="cmf.ManagePortal"
+      />
+
+  <browser:page
+      name="import_localroles"
+      for="zope.interface.Interface"
+      class=".import_other.CustomImportLocalRoles"
+      layer="contentimportulearn.interfaces.IContentimportLayer"
+      permission="cmf.ManagePortal"
+      />
+
+  <browser:page
+      name="import_portalrolemanager"
+      for="zope.interface.Interface"
+      class=".import_portalrolemanager.ImportPortalRoleManager"
+      layer="contentimportulearn.interfaces.IContentimportLayer"
+      permission="cmf.ManagePortal"
+      />
+
+  <browser:page
+      zcml:condition="installed plone.app.multilingual"
+      name="import_translations"
+      for="zope.interface.Interface"
+      class=".import_other.CustomImportTranslations"
+      layer="contentimportulearn.interfaces.IContentimportLayer"
+      permission="cmf.ManagePortal"
+      />
+
+    <browser:page
+      name="import_ordering"
+      for="zope.interface.Interface"
+      class=".import_other.CustomImportOrdering"
+      layer="contentimportulearn.interfaces.IContentimportLayer"
+      permission="cmf.ManagePortal"
+      />
+</configure>
