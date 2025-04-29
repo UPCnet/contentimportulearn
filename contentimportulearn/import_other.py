@@ -105,7 +105,11 @@ def register_portlets(obj, item):
             #     except:
             #         continue
             if portlet_data["type"] == 'plone.portlet.collection.Collection':
-                path = portlet_data["assignment"]['target_collection']
+                try:
+                    path = portlet_data["assignment"]['target_collection']
+                except:
+                    path = None
+
                 if path == None:
                     logger.error(
                             u"Could not import portlet data {} on {}".format(
