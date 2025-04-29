@@ -52,11 +52,11 @@ class ImportControlpanels(BrowserView):
             setattr(base_settings, key, value)
             logger.info(f"Imported record {key}: {value} to controlpanel: base5.core.controlpanel.IBaseCoreControlPanelSettings")
 
-        for key, value in data["controlpanel"]["mrs5.max.controlpanel.IMAXUISettings"].items():
-            from mrs5.max.browser.controlpanel import IMAXUISettings
-            maxui_settings = registry.forInterface(IMAXUISettings)
-            setattr(maxui_settings, key, value)
-            logger.info(f"Imported record {key}: {value} to controlpanel: mrs5.max.controlpanel.IMAXUISettings")
+        # for key, value in data["controlpanel"]["mrs5.max.controlpanel.IMAXUISettings"].items():
+        #     from mrs5.max.browser.controlpanel import IMAXUISettings
+        #     maxui_settings = registry.forInterface(IMAXUISettings)
+        #     setattr(maxui_settings, key, value)
+        #     logger.info(f"Imported record {key}: {value} to controlpanel: mrs5.max.controlpanel.IMAXUISettings")
 
         for key, value in data["controlpanel"]["ulearn5.core.controlpanel.IUlearnControlPanelSettings"].items():
             from ulearn5.core.controlpanel import IUlearnControlPanelSettings
