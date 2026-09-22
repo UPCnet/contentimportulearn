@@ -44,19 +44,30 @@ class ImportSettings(BrowserView):
 
     def import_settings(self, data):
         installer = get_installer(self.context)
-        for addon in data["addons"]:
-            # if addon == "genweb.scholarship":
-            #     addon = "genweb6.scholarship"
-            # elif addon == "genweb.tfemarket":
-            #     addon = "genweb6.tfemarket"
-            # elif addon == "genweb.ens":
-            #     addon = "genweb6.ens"
-            # elif addon == "genweb.serveistic":
-            #     addon = "genweb6.serveistic"
-            # elif addon == "genweb.patents":
-            #     addon = "genweb6.patents"
-            # elif addon == "genweb.esports":
-            #     addon = "genweb6.esports"
-            if not installer.is_product_installed(addon) and installer.is_product_installable(addon):
-                installer.install_product(addon)
-                logger.info(f"Installed addon {addon}")
+        legacy_addons = {
+            "base5.core",
+            "base5.portlets",
+            "mrs5.max",
+            "ulearn5.core",
+            "ulearn5.theme",
+        }
+        for addon in data.get("addons") or []:
+            if addon in legacy_addons:
+                logger.info(
+                    "Skipping legacy addon %s (not used in uShare6 migration)",
+                    addon,
+                )
+                continue
+            if addon.startswith("ulearn5."):
+                logger.info(
+                    "Skipping legacy client addon %s (use ushare6_* packages)",
+                    addon,
+                )
+                continue
+            if installer.is_product_installed(addon):
+                continue
+            if not installer.is_product_installable(addon):
+                logger.warning("Addon %s is not installable; skipped", addon)
+                continue
+            installer.install_product(addon)
+            logger.info("Installed addon %s", addon)

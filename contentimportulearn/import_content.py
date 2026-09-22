@@ -29,6 +29,9 @@ import random
 import transaction
 import datetime
 
+from ushare6_core.content.community.import_acl import apply_community_acl_from_export
+from ushare6_core.max import max_sync_suppressed, set_max_sync_suppressed
+
 logger = logging.getLogger(__name__)
 
 
@@ -117,6 +120,19 @@ ALLOWED_TYPES = [
     "ulearn.abacus.ubication",
     "ulearn.abacus.area",
     "ulearn.abacus.work_placement",
+    "ulearn.affiliate",
+    "CholPeptide",
+    "CholPeptideShipment",
+    "EntrapmentEfficiencyDeterminationTechnique",
+    "GLA",
+    "GLAShipment",
+    "Ingredient",
+    "InnactiveIngredient",
+    "Nanoformula",
+    "NanoformulaShipment",
+    "Operator",
+    "ReactorReference",
+    "ResearchGroup",
 ]
 
 CUSTOMVIEWFIELDS_MAPPING = {
@@ -124,6 +140,85 @@ CUSTOMVIEWFIELDS_MAPPING = {
 }
 
 ANNOTATIONS_KEY = "exportimport.annotations"
+
+# Choice fields bound to catalog vocabularies: REST deserialize validates against
+# terms that may not exist yet during bulk import. Stash and setattr after create.
+DEFERRED_FIELDS_KEY = "exportimportulearn.deferred_fields"
+
+NANOMOL_DEFERRED_FIELDS = {
+    "NanoformulaShipment": ("sponsor_address", "recipient_address"),
+    "CholPeptideShipment": ("sponsor_address", "recipient_address"),
+    "GLAShipment": ("sponsor_address", "recipient_address"),
+    "Nanoformula": (
+        "reactor_reference",
+        "diafiltration_process",
+        "operator",
+        "final_physical_form",
+        "api_loading",
+        "gla",
+        "cholpeptide",
+        "entrapment_technique",
+        "addressee",
+        "innactive_ingredients",
+        "ingredients",
+    ),
+    "CholPeptide": ("operator", "ingredients", "addressee"),
+    "GLA": (
+        "preparation_method",
+        "operator",
+        "physical_form",
+        "ingredients",
+        "addressee",
+    ),
+}
+
+IMPORT_PAYLOAD_SKIP_KEYS = frozenset(
+    {
+        "@id",
+        "@type",
+        "parent",
+        "UID",
+        "id",
+        "review_state",
+        "workflow_history",
+        "exportimport.constrains",
+        "exportimport.versions",
+        ANNOTATIONS_KEY,
+        DEFERRED_FIELDS_KEY,
+        "factory_kwargs",
+        "is_folderish",
+        "layout",
+        "modified",
+        "created",
+        "modification_date",
+        "creation_date",
+        "allow_discussion",
+        "exclude_from_nav",
+        "comments",
+        "creators",
+        "contributors",
+        "effective",
+        "expires",
+        "subject",
+        "language",
+        "relatedItems",
+        "nextPreviousEnabled",
+        "slblocks",
+        "slblocks_layout",
+        "version",
+        "changeNote",
+    }
+)
+
+# uLearn5 multi-site exports use /{mount}/{site_id}/… in @id paths (e.g. /22/enginyersbcn/).
+# collective.exportimport only strips the Zope mountpoint and would create a spurious
+# ``enginyersbcn`` folder under the destination Plone site.
+#
+# Configure per migration (no hardcoded client):
+#   ULEARN_LEGACY_MOUNTPOINT  e.g. 16 or 22 (optional if auto-detect works)
+#   ULEARN_LEGACY_SITE_ID     e.g. nanomol (defaults: registry domain, CLIENT env)
+# Auto-detect: first path like /16/nanomol/… in the export when mount is unset.
+
 
 class CustomImportContent(ImportContent):
 
@@ -157,6 +252,38 @@ class CustomImportContent(ImportContent):
         if not self.request.form.get("form.submitted", False):
             return self.template()
 
+        owned_max_skip = False
+        if not max_sync_suppressed():
+            set_max_sync_suppressed(request, True)
+            owned_max_skip = True
+            logger.info(
+                "import_content: MAX community sync disabled (use changeurlcommunities "
+                "after import to rewrite Mongo context URLs)."
+            )
+
+        try:
+            return self._run_import_content(
+                request,
+                jsonfile=jsonfile,
+                return_json=return_json,
+                server_file=server_file,
+                iterator=iterator,
+                server_directory=server_directory,
+            )
+        finally:
+            if owned_max_skip:
+                set_max_sync_suppressed(request, False)
+
+    def _run_import_content(
+        self,
+        request,
+        *,
+        jsonfile=None,
+        return_json=False,
+        server_file=None,
+        iterator=None,
+        server_directory=False,
+    ):
         # If we open a server file, we should close it at the end.
         close_file = False
         status = "success"
@@ -229,6 +356,77 @@ class CustomImportContent(ImportContent):
             return json.dumps(msg)
         return self.template()
 
+    def _try_detect_legacy_segments(self, path_parts):
+        if getattr(self, "_detected_legacy_segments", None):
+            return
+        if len(path_parts) < 2 or not str(path_parts[0]).isdigit():
+            return
+        mount, site_id = str(path_parts[0]), str(path_parts[1])
+        self._detected_legacy_segments = (mount, site_id)
+        logger.info(
+            "Auto-detected uLearn export path prefix /%s/%s/ "
+            "(override with ULEARN_LEGACY_MOUNTPOINT / ULEARN_LEGACY_SITE_ID)",
+            mount,
+            site_id,
+        )
+
+    def _legacy_site_segments(self):
+        mount = (os.environ.get("ULEARN_LEGACY_MOUNTPOINT") or "").strip()
+        site_id = (os.environ.get("ULEARN_LEGACY_SITE_ID") or "").strip()
+        if not site_id:
+            try:
+                site_id = (
+                    api.portal.get_registry_record(
+                        "ushare6_core.controlpanel.max.IMaxUISettings.domain"
+                    )
+                    or ""
+                ).strip()
+            except Exception:
+                site_id = ""
+        if not site_id:
+            site_id = (os.environ.get("CLIENT") or "").strip().lower()
+        detected = getattr(self, "_detected_legacy_segments", None)
+        if detected:
+            d_mount, d_site = detected
+            if not mount:
+                mount = d_mount
+            if not site_id:
+                site_id = d_site
+        return mount, site_id
+
+    def _strip_legacy_path_segments(self, path_parts):
+        """Remove uLearn mountpoint + legacy site id from a URL path segment list."""
+        parts = list(path_parts)
+        if not (os.environ.get("ULEARN_LEGACY_MOUNTPOINT") or "").strip():
+            self._try_detect_legacy_segments(parts)
+        mount, site_id = self._legacy_site_segments()
+        if mount and parts and parts[0] == mount:
+            parts = parts[1:]
+        if site_id and parts and parts[0] == site_id:
+            parts = parts[1:]
+        return parts
+
+    def _rewrite_legacy_url(self, url):
+        """Map ``…/22/enginyersbcn/foo`` to ``{portal}/foo`` for local import."""
+        if not url:
+            return url
+        url = unquote(url)
+        parsed = urlparse(url)
+        path_parts = [segment for segment in parsed.path.split("/") if segment]
+        path_parts = self._strip_legacy_path_segments(path_parts)
+        portal = getattr(self, "portal", None) or api.portal.get()
+        portal_url = portal.absolute_url().rstrip("/")
+        suffix = "/" + "/".join(path_parts) if path_parts else ""
+        return f"{portal_url}{suffix}"
+
+    def _rewrite_item_legacy_urls(self, item):
+        if item.get("@id"):
+            item["@id"] = self._rewrite_legacy_url(item["@id"])
+        parent = item.get("parent")
+        if parent and parent.get("@id"):
+            parent["@id"] = self._rewrite_legacy_url(parent["@id"])
+        return item
+
     def create_container(self, item):
         """Create container for item.
 
@@ -247,6 +445,11 @@ class CustomImportContent(ImportContent):
             # First element will then be a Plone Site id.
             # Get rid of it.
             parent_path = parent_path[1:]
+
+        parent_path = self._strip_legacy_path_segments(parent_path)
+        if not parent_path:
+            portal = getattr(self, "portal", None) or api.portal.get()
+            return portal
 
         # Handle folderish Documents provided by plone.volto
         fti = getUtility(IDexterityFTI, name="Document")
@@ -275,7 +478,100 @@ class CustomImportContent(ImportContent):
 
     def global_obj_hook(self, obj, item):
         item = self.import_annotations(obj, item)
+        self._apply_deferred_fields(obj, item)
         return item
+
+    def _defer_nanomol_vocabulary_fields(self, item):
+        portal_type = fix_portal_type(item.get("@type", ""))
+        field_names = NANOMOL_DEFERRED_FIELDS.get(portal_type)
+        if not field_names:
+            return item
+        deferred = dict(item.get(DEFERRED_FIELDS_KEY, {}))
+        for name in field_names:
+            if name not in item:
+                continue
+            value = item.pop(name)
+            if value is None or value == "":
+                continue
+            deferred[name] = value
+        if deferred:
+            item[DEFERRED_FIELDS_KEY] = deferred
+        return item
+
+    def _apply_deferred_fields(self, obj, item):
+        deferred = item.pop(DEFERRED_FIELDS_KEY, None)
+        if not deferred:
+            return
+        for name, value in deferred.items():
+            try:
+                setattr(obj, name, value)
+            except Exception:
+                logger.warning(
+                    "Could not set deferred field %s on %s",
+                    name,
+                    item.get("@id"),
+                    exc_info=True,
+                )
+
+    def _try_set_image_from_item(self, obj, item):
+        image = item.get("image")
+        if not isinstance(image, dict):
+            return False
+        data = image.get("data")
+        if data is None:
+            return False
+        from plone.namedfile.file import NamedBlobImage
+
+        filename = image.get("filename") or image.get("content-type") or "image"
+        try:
+            obj.image = NamedBlobImage(data=data, filename=filename)
+            return True
+        except Exception:
+            logger.warning(
+                "Could not set image blob on %s %s",
+                item.get("@type"),
+                item.get("@id"),
+                exc_info=True,
+            )
+            return False
+
+    def _apply_item_payload_direct(self, obj, item):
+        """Set exported fields without REST validation (import recovery)."""
+        for key, value in item.items():
+            if key in IMPORT_PAYLOAD_SKIP_KEYS or key.startswith("@"):
+                continue
+            if key in ("image", "file", "financial_entity") and isinstance(value, dict):
+                continue
+            try:
+                setattr(obj, key, value)
+            except Exception:
+                continue
+        self._try_set_image_from_item(obj, item)
+
+    def _recover_deserialize_failure(self, obj, item, error):
+        err = str(error)
+        portal_type = fix_portal_type(item.get("@type", ""))
+        if portal_type in NANOMOL_DEFERRED_FIELDS or "Constraint not satisfied" in err:
+            logger.warning(
+                "Deserialize failed for %s %s — applying exported fields directly: %s",
+                item.get("@type"),
+                item.get("@id"),
+                err,
+            )
+            self._defer_nanomol_vocabulary_fields(item)
+            self._apply_item_payload_direct(obj, item)
+            self._apply_deferred_fields(obj, item)
+            return
+        if "image" in err.lower() or item.get("@type") in ("Image", "ulearn.banner"):
+            if self._try_set_image_from_item(obj, item):
+                logger.warning(
+                    "Recovered image for %s %s after: %s",
+                    item.get("@type"),
+                    item.get("@id"),
+                    err,
+                )
+                return
+        logger.error("Deserialize failure: %s", err)
 
     # @ram.cache(lambda *args: time() // (24 * 60 * 60))
     # def dict_hook_tfe_offer(self, item):
@@ -307,22 +603,7 @@ class CustomImportContent(ImportContent):
                 alsoProvides(obj, iface)
         return obj, item
         """
-        if item['@type'] == 'ulearn.community':
-            acl = item['acl']
-
-            # Permisos ACL
-            adapter = obj.adapted()
-            adapter.update_acl(acl)
-
-            try:
-                adapter.set_plone_permissions(acl)
-            except Exception:
-                if acl.get('groups') == u'':
-                            acl['groups'] = []
-                            adapter.set_plone_permissions(acl)
-
-                adapter.update_hub_subscriptions()
-
+        # Community ACL is applied in handle_new_object after UID / gwuuid exist.
 
         # if item['@type'] == 'genweb.tfemarket.offer':
         #     titulacions, topics, tags = self.dict_hook_tfe_offer(item)
@@ -370,10 +651,6 @@ class CustomImportContent(ImportContent):
 
         return obj, item
 
-    def global_dict_hook(self, item):
-        item["creators"] = [i for i in item.get("creators", []) if i]
-        return item
-
     def import_annotations(self, obj, item):
         annotations = IAnnotations(obj)
         for key in item.get(ANNOTATIONS_KEY, []):
@@ -404,15 +681,7 @@ class CustomImportContent(ImportContent):
         return uuid
 
     def global_dict_hook(self, item):
-
-        # # Adapt this to your site
-        # old_portal_id = self.portal.id
-        # new_portal_id = self.portal.id
-
-        # # This is only relevant for items in the site-root.
-        # # Most items containers are usually looked up by the uuid of the old parent
-        # item["@id"] = item["@id"].replace(f"/{old_portal_id}/", f"/{new_portal_id}/", 1)
-        # item["parent"]["@id"] = item["parent"]["@id"].replace(f"/{old_portal_id}", f"/{new_portal_id}", 1)
+        item = self._rewrite_item_legacy_urls(item)
 
         # update constraints
         if item.get("exportimport.constrains"):
@@ -447,6 +716,8 @@ class CustomImportContent(ImportContent):
         # Workflows...
         if item.get("review_state") in REVIEW_STATE_MAPPING:
             item["review_state"] = REVIEW_STATE_MAPPING[item["review_state"]]
+
+        item = self._defer_nanomol_vocabulary_fields(item)
 
         # # Expires before effective
         effective = item.get('effective', None)
@@ -728,18 +999,15 @@ class CustomImportContent(ImportContent):
 
                 # logger.error("TODO ERROR TFE_STATE: %s ", json.dumps(TFE_STATE_MAPPING))
                 new.type_codirector = item["type_codirector"]
+            elif (
+                "Constraint not satisfied', 'field': 'sponsor_address'" in str(e)
+                or "Constraint not satisfied', 'field': 'recipient_address'" in str(e)
+            ):
+                for field in ("sponsor_address", "recipient_address"):
+                    if field in item:
+                        setattr(new, field, item[field])
             else:
-                logger.error("TODO ERROR : %s", str(e))
-                # Genweb6 añadimos imagen aunque este rota
-                from plone.namedfile.file import NamedBlobImage
-                new.image = NamedBlobImage(
-                    data=item['image']['data'],
-                    filename=item['image']['filename'])
-                logger.warning(
-                    "OJO Cannot deserialize %s %s %s", item["@type"],
-                    item["@id"],
-                    str(e),
-                    exc_info=True)
+                self._recover_deserialize_failure(new, item, e)
 
         # Blobs can be exported as only a path in the blob storage.
         # It seems difficult to dynamically use a different deserializer,
@@ -749,6 +1017,9 @@ class CustomImportContent(ImportContent):
         self.import_constrains(new, item)
 
         uuid = self.set_uuid(item, new)
+
+        if fix_portal_type(item.get("@type")) == "ulearn.community" and item.get("acl"):
+            apply_community_acl_from_export(new, item)
 
         if uuid != item.get("UID"):
             # Happens only when we import content that doesn't have a UID

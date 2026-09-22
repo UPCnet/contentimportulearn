@@ -5,6 +5,7 @@ from collective.exportimport.fix_html import fix_html_in_portlets
 from collective.exportimport.fix_html import fix_tag_attr
 from contentimportulearn.interfaces import IContentimportLayer
 from logging import getLogger
+from ushare6_core.max import set_max_sync_suppressed
 from pathlib import Path
 from plone import api
 from Products.CMFPlone.utils import get_installer
@@ -40,7 +41,20 @@ class ImportAll(BrowserView):
 
         portal = api.portal.get()
         alsoProvides(request, IContentimportLayer)
+        set_max_sync_suppressed(request, True)
+        logger.info(
+            "@@import_all: MAX community sync disabled — Mongo contexts are "
+            "left unchanged; run changeurlcommunities after import."
+        )
 
+        try:
+            self._run_import_all(request, portal)
+        finally:
+            set_max_sync_suppressed(request, False)
+
+        return request.response.redirect(portal.absolute_url())
+
+    def _run_import_all(self, request, portal):
         installer = get_installer(portal)
         if not installer.is_product_installed("contentimport"):
             installer.install_product("contentimport")
@@ -102,6 +116,17 @@ class ImportAll(BrowserView):
             else:
                 logger.info(f"Missing file: {path}")
 
+        path_user_catalog = Path(directory) / "export_user_catalog.json"
+        if path_user_catalog.exists():
+            view = api.content.get_view("import_user_catalog", portal, request)
+            results = view(
+                jsonfile=path_user_catalog.read_text(), return_json=True
+            )
+            logger.info(results)
+            transaction.commit()
+        else:
+            logger.info(f"Missing file: {path_user_catalog}")
+
         # fixers = [
         #     fix_modal, fix_modify_class, fix_modify_image_gw4, fix_img_icon_blanc,
         #     fix_iframe_loading_lazy, fix_nav_tabs_box, fix_nav_tabs, fix_accordion,
@@ -130,8 +155,6 @@ class ImportAll(BrowserView):
         # reset_dates = api.content.get_view("reset_dates", portal, request)
         # reset_dates()
         # transaction.commit()
-
-        return request.response.redirect(portal.absolute_url())
 
 
 def fix_img_icon_blanc(text, obj=None):
