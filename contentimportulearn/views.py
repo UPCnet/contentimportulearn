@@ -7,6 +7,9 @@ from contentimportulearn.interfaces import IContentimportLayer
 from logging import getLogger
 from ushare6_core.max import set_max_sync_suppressed
 from pathlib import Path
+import shutil
+import tempfile
+import zipfile
 from plone import api
 from Products.CMFPlone.utils import get_installer
 from Products.Five import BrowserView
@@ -34,7 +37,13 @@ IMAGE_MODIFY = {}
 
 class ImportAll(BrowserView):
 
-    def __call__(self):
+    def import_directory_hint(self) -> str:
+        cfg = getConfiguration()
+        portal = api.portal.get()
+        directory = Path(cfg.clienthome) / "import" / portal.id
+        return f"{directory}/"
+
+    def __call__(self, jsonfile=None):
         request = self.request
         if not request.form.get("form.submitted", False):
             return self.index()
@@ -48,13 +57,55 @@ class ImportAll(BrowserView):
         )
 
         try:
-            self._run_import_all(request, portal)
+            self._run_import_all(request, portal, jsonfile=jsonfile)
         finally:
             set_max_sync_suppressed(request, False)
 
         return request.response.redirect(portal.absolute_url())
 
-    def _run_import_all(self, request, portal):
+    def _unpack_uploaded_zip(self, jsonfile, directory: Path) -> None:
+        """Extract collective.exportimport export zip into var/import/<portal.id>."""
+        if not jsonfile or not getattr(jsonfile, "filename", None):
+            return
+
+        filename = jsonfile.filename.lower()
+        if not filename.endswith(".zip"):
+            logger.warning(
+                "@@import_all: upload ignored (expected .zip, got %s)", filename
+            )
+            return
+
+        file_content = jsonfile.read()
+        directory.mkdir(parents=True, exist_ok=True)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            zip_path = temp_path / "uploaded.zip"
+            zip_path.write_bytes(file_content)
+
+            with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                zip_ref.extractall(temp_path)
+
+            source = temp_path
+            top_level = [
+                p for p in temp_path.iterdir() if p.name != zip_path.name
+            ]
+            if len(top_level) == 1 and top_level[0].is_dir():
+                if not any(temp_path.glob("export_*.json")):
+                    source = top_level[0]
+
+            for item in source.iterdir():
+                if item.name == zip_path.name:
+                    continue
+                dest = directory / item.name
+                if item.is_dir():
+                    shutil.copytree(item, dest, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, dest)
+
+        logger.info("@@import_all: unpacked upload into %s", directory)
+
+    def _run_import_all(self, request, portal, jsonfile=None):
         installer = get_installer(portal)
         if not installer.is_product_installed("contentimport"):
             installer.install_product("contentimport")
@@ -67,6 +118,7 @@ class ImportAll(BrowserView):
         transaction.commit()
         cfg = getConfiguration()
         directory = Path(cfg.clienthome) / "import" / portal.id
+        self._unpack_uploaded_zip(jsonfile, directory)
 
         other_imports_ini = [
             "settings",
