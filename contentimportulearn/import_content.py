@@ -13,12 +13,14 @@ from datetime import timedelta
 from plone import api
 from plone.base.interfaces import IPloneSiteRoot
 from plone.dexterity.interfaces import IDexterityFTI
+from plone.dexterity.utils import iterSchemata
 from plone.restapi.interfaces import IDeserializeFromJson
 from six.moves.urllib.parse import unquote
 from six.moves.urllib.parse import urlparse
 from zope.annotation.interfaces import IAnnotations
 from zope.component import getMultiAdapter
 from zope.component import getUtility
+from zope.schema import getFields
 from plone.memoize import ram
 from time import time
 
@@ -489,12 +491,42 @@ class CustomImportContent(ImportContent):
         return folder
 
     def global_obj_hook(self, obj, item):
+        self._restore_readonly_fields(obj, item)
         item = self.import_annotations(obj, item)
         self._apply_deferred_fields(obj, item)
         self._import_preview_image(obj, item)
         self._restore_parent_title(obj, item)
         self._import_favorites(obj, item)
         return item
+
+    def _restore_readonly_fields(self, obj, item):
+        """Set the exported value of schema fields declared ``readonly=True``.
+
+        The plone.restapi deserializer skips readonly fields, so e.g. the
+        ``title`` of GLA / Nanoformula / CholPeptide (``readonly=True`` in their
+        schema) would stay empty whenever the item deserializes without errors.
+        Only plain values of fields that are still empty are restored.
+        """
+        for schema in iterSchemata(obj):
+            for name, field in getFields(schema).items():
+                if not field.readonly or name not in item:
+                    continue
+                if name in IMPORT_PAYLOAD_SKIP_KEYS or name.startswith("@"):
+                    continue
+                value = item[name]
+                if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+                    continue
+                if value == "" or getattr(aq_base(obj), name, None):
+                    continue
+                try:
+                    setattr(obj, name, value)
+                except Exception:
+                    logger.warning(
+                        "Could not restore readonly field %s on %s",
+                        name,
+                        item.get("@id"),
+                        exc_info=True,
+                    )
 
     def _import_favorites(self, obj, item):
         """Restore the users who starred a community (``_favoritedBy``).
