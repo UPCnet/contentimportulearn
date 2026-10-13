@@ -3,7 +3,9 @@
 collective.exportimport has no Volto migrator: plone.volto removes the
 ``plone.richtext`` behavior, so the ``text`` of each Document / News Item /
 Event is turned here into a single ``html`` block (plus title, description,
-lead image and event metadata blocks).
+lead image and event metadata blocks). Inline images are rewritten to the path
+of the image (``resolve_image_srcs``), because Volto's image proxy cannot follow
+the redirect Plone answers to ``resolveuid/<UID>/@@images/...``.
 
 The exported lead ``image`` is dropped too: the Volto News Item has no
 ``plone.leadimage`` behavior. ``import_preview_image`` keeps it as a child
@@ -17,6 +19,7 @@ from logging import getLogger
 from plone import api
 from plone.app.contenttypes.behaviors.leadimage import ILeadImageBehavior
 from plone.app.textfield.value import IRichTextValue
+from plone.app.uuid.utils import uuidToObject
 from plone.namedfile.file import NamedBlobImage
 from plone.volto.setuphandlers import remove_behavior
 from ushare6_core.usharelayout.block_defaults import make_html_block
@@ -24,6 +27,7 @@ from ushare6_core.usharelayout.interfaces import COMMUNITY_PORTAL_TYPE
 from ushare6_core.usharelayout.layout_access import write_volto_center_blocks
 
 import base64
+import re
 import transaction
 import uuid
 
@@ -42,6 +46,11 @@ MIGRATION_BLOCK_TYPES = {
     "slate",
 }
 
+
+# <img src="resolveuid/<UID>[/@@images/<field>[/<scale>]]">, possibly relative
+RESOLVEUID_SRC = re.compile(
+    r"^(?:\.{1,2}/)*/?resolveuid/(?P<uid>[0-9a-f]{32})(?P<images>/@@images/\S*)?$"
+)
 
 # Tags that make a body non-empty even without any text.
 VISIBLE_TAGS = ["img", "iframe", "video", "audio", "object", "embed", "table", "hr"]
@@ -71,6 +80,38 @@ def clean_html(html):
     if not plain_text(str(soup)) and not soup.find(VISIBLE_TAGS):
         return ""
     return str(soup).strip()
+
+
+def resolve_image_srcs(html):
+    """Point ``<img src="resolveuid/<UID>/@@images/...">`` at the image path.
+
+    Plone answers those URLs with a 301 to its absolute backend URL, which the
+    Volto image proxy does not follow, so the image would not render. The
+    app-relative path (``/folder/image.png/@@images/image/large``) is served
+    through the ``**/@@images/*`` proxy. Links keep ``resolveuid`` (handled by
+    the express middleware); images that cannot be resolved are left as is.
+    """
+    if "resolveuid/" not in html:
+        return html
+    soup = BeautifulSoup(html, "html.parser")
+    portal_depth = len(api.portal.get().getPhysicalPath())
+    changed = False
+    for img in soup.find_all("img", src=True):
+        match = RESOLVEUID_SRC.match(img["src"].strip())
+        if match is None:
+            continue
+        target = uuidToObject(match.group("uid"), unrestricted=True)
+        if target is None:
+            continue
+        suffix = match.group("images")
+        if not suffix and target.portal_type == "Image":
+            suffix = "/@@images/image"
+        if not suffix:
+            continue
+        path = "/" + "/".join(target.getPhysicalPath()[portal_depth:])
+        img["src"] = path + suffix
+        changed = True
+    return str(soup) if changed else html
 
 
 def plain_text(html):
@@ -219,7 +260,7 @@ def migrate_richtext_to_blocks(
         if not should_convert(obj, force=force):
             skipped += 1
             continue
-        html = clean_html(get_richtext(obj, fieldname))
+        html = resolve_image_srcs(clean_html(get_richtext(obj, fieldname)))
         has_layout = bool((getattr(aq_base(obj), "blocks_layout", None) or {}).get("items"))
         if not html and has_layout:
             # Nothing to add and the object already has its own blocks
