@@ -1,5 +1,6 @@
 from collective.exportimport.import_content import filesystem_walker
 from Acquisition import aq_base
+from Acquisition import aq_parent
 from App.config import getConfiguration
 from DateTime import DateTime
 from Products.CMFPlone.utils import _createObjectByType
@@ -10,6 +11,7 @@ from collective.exportimport.import_content import fix_portal_type
 from datetime import datetime
 from datetime import timedelta
 from plone import api
+from plone.base.interfaces import IPloneSiteRoot
 from plone.dexterity.interfaces import IDexterityFTI
 from plone.restapi.interfaces import IDeserializeFromJson
 from six.moves.urllib.parse import unquote
@@ -29,10 +31,19 @@ import random
 import transaction
 import datetime
 
+from contentimportulearn.migrate_blocks import import_preview_image
+from ushare6_core.adapters.favorites import IFavorite
 from ushare6_core.content.community.import_acl import apply_community_acl_from_export
+from ushare6_core.usharelayout.interfaces import COMMUNITY_PORTAL_TYPE
 from ushare6_core.max import max_sync_suppressed, set_max_sync_suppressed
 
 logger = logging.getLogger(__name__)
+
+
+def fallback_title(content_id):
+    """Readable title from an id: ``actes-de-reunions`` -> ``Actes de reunions``."""
+    text = (content_id or "").replace("-", " ").replace("_", " ").strip()
+    return text[:1].upper() + text[1:]
 
 
 # map old to new views
@@ -185,6 +196,7 @@ IMPORT_PAYLOAD_SKIP_KEYS = frozenset(
         "exportimport.versions",
         ANNOTATIONS_KEY,
         DEFERRED_FIELDS_KEY,
+        "favoritedBy",
         "factory_kwargs",
         "is_folderish",
         "layout",
@@ -479,7 +491,58 @@ class CustomImportContent(ImportContent):
     def global_obj_hook(self, obj, item):
         item = self.import_annotations(obj, item)
         self._apply_deferred_fields(obj, item)
+        self._import_preview_image(obj, item)
+        self._restore_parent_title(obj, item)
+        self._import_favorites(obj, item)
         return item
+
+    def _import_favorites(self, obj, item):
+        """Restore the users who starred a community (``_favoritedBy``).
+
+        uLearn5 keeps them as a plain attribute that the exporter emits as
+        ``favoritedBy``; the same attribute drives ``scope=userfav``.
+        """
+        usernames = item.get("favoritedBy")
+        if obj.portal_type != COMMUNITY_PORTAL_TYPE or not usernames:
+            return
+        favorite = IFavorite(obj)
+        for username in usernames:
+            favorite.add(username)
+
+    def _restore_parent_title(self, obj, item):
+        """Set the parent's title from the ``parent`` summary exported with ``item``.
+
+        uLearn5 exports Folders without their schema fields, but each child
+        carries its parent's real title and description.
+        """
+        summary = item.get("parent") or {}
+        title = (summary.get("title") or "").strip()
+        parent = aq_parent(obj)
+        if not title or parent is None or IPloneSiteRoot.providedBy(parent):
+            return
+        parent_id = (summary.get("@id") or "").rstrip("/").rsplit("/", 1)[-1]
+        if parent.getId() != parent_id:
+            return
+        # Only replace placeholders: empty, the bare id (create_container) or
+        # the id-derived fallback (global_dict_hook)
+        current = (parent.title or "").strip()
+        if current not in ("", parent.getId(), fallback_title(parent.getId())):
+            return
+        parent.title = title
+        if not (parent.description or "").strip() and summary.get("description"):
+            parent.description = summary["description"]
+
+    def _import_preview_image(self, obj, item):
+        """Keep the exported lead image, which the Volto News Item has no field for."""
+        try:
+            import_preview_image(obj, item)
+        except Exception:
+            logger.warning(
+                "Could not import lead image of %s %s",
+                item.get("@type"),
+                item.get("@id"),
+                exc_info=True,
+            )
 
     def _defer_nanomol_vocabulary_fields(self, item):
         portal_type = fix_portal_type(item.get("@type", ""))
@@ -728,6 +791,11 @@ class CustomImportContent(ImportContent):
         # # drop empty creator
         item["creators"] = [i for i in item.get("creators", []) if i]
 
+        # uLearn5 exports Folders without title: provisional one from the id,
+        # replaced by the real title when a child arrives (_restore_parent_title)
+        if item.get("@type") == "Folder" and not item.get("title"):
+            item["title"] = fallback_title(item.get("id"))
+
         return item
 
     def dict_hook_topic(self, item):
@@ -906,7 +974,7 @@ class CustomImportContent(ImportContent):
 
             if self.import_old_revisions and item.get("exportimport.versions"):
                 # TODO: refactor into import_item to prevent duplicattion
-                new = self.import_versions(container, item)
+                new = self.import_versions(container, item, index)
                 if new:
                     added.append(new.absolute_url())
                 if self.commit and not len(added) % self.commit:

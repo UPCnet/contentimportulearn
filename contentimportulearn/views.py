@@ -4,6 +4,7 @@ from collective.exportimport.fix_html import fix_html_in_content_fields
 from collective.exportimport.fix_html import fix_html_in_portlets
 from collective.exportimport.fix_html import fix_tag_attr
 from contentimportulearn.interfaces import IContentimportLayer
+from contentimportulearn.migrate_blocks import migrate_richtext_to_blocks
 from logging import getLogger
 from ushare6_core.max import set_max_sync_suppressed
 from pathlib import Path
@@ -19,6 +20,8 @@ from plone.app.textfield.interfaces import IRichText
 from plone.app.textfield.value import IRichTextValue
 from plone.portlets.interfaces import IPortletAssignmentMapping
 from plone.portlets.interfaces import IPortletManager
+from plone.volto.setuphandlers import add_behavior
+from plone.volto.setuphandlers import remove_behavior
 from zope.component import getUtilitiesFor
 from zope.component import queryMultiAdapter
 from zope.interface import alsoProvides
@@ -29,6 +32,9 @@ import transaction
 logger = getLogger(__name__)
 
 DEFAULT_ADDONS = []
+
+# Types whose ``text`` plone.volto strips; enabled only while importing.
+RICHTEXT_IMPORT_TYPES = ("Document", "News Item", "Event")
 
 CLASS_MODIFY = {}
 
@@ -59,6 +65,12 @@ class ImportAll(BrowserView):
         try:
             self._run_import_all(request, portal, jsonfile=jsonfile)
         finally:
+            # Never leave the richtext field visible in the Volto edit form.
+            # Abort first so a failed step is not committed along with it.
+            transaction.abort()
+            for portal_type in RICHTEXT_IMPORT_TYPES:
+                remove_behavior(portal_type, "plone.richtext")
+            transaction.commit()
             set_max_sync_suppressed(request, False)
 
         return request.response.redirect(portal.absolute_url())
@@ -114,6 +126,15 @@ class ImportAll(BrowserView):
         for addon in DEFAULT_ADDONS:
             if not installer.is_product_installed(addon):
                 installer.install_product(addon)
+
+        # Re-enable plone.richtext so the deserializer keeps the exported `text`
+        # (setting fti.behaviors invalidates the schema cache in this request)
+        for portal_type in RICHTEXT_IMPORT_TYPES:
+            add_behavior(portal_type, "plone.richtext")
+        logger.info(
+            "plone.richtext temporarily enabled for %s",
+            ", ".join(RICHTEXT_IMPORT_TYPES),
+        )
 
         transaction.commit()
         cfg = getConfiguration()
@@ -179,11 +200,8 @@ class ImportAll(BrowserView):
         else:
             logger.info(f"Missing file: {path_user_catalog}")
 
-        # fixers = [
-        #     fix_modal, fix_modify_class, fix_modify_image_gw4, fix_img_icon_blanc,
-        #     fix_iframe_loading_lazy, fix_nav_tabs_box, fix_nav_tabs, fix_accordion,
-        #     fix_carousel, fix_ul_thumbnails, fix_ul_full4]
-        fixers = []
+        # html_fixer chains fix_tag_attr and the uLearn5 markup fixers
+        fixers = [html_fixer]
         results = fix_html_in_content_fields(fixers=fixers, apply_default_fixer=False)
         msg = "Fixed html for {} content items".format(results)
         logger.info(msg)
@@ -192,6 +210,15 @@ class ImportAll(BrowserView):
         results = fix_html_in_portlets()
         msg = "Fixed html for {} portlets".format(results)
         logger.info(msg)
+        transaction.commit()
+
+        # Volto only renders blocks: move the fixed html into an html block
+        migrate_richtext_to_blocks(
+            portal_types=RICHTEXT_IMPORT_TYPES, reindex=False
+        )
+        for portal_type in RICHTEXT_IMPORT_TYPES:
+            remove_behavior(portal_type, "plone.richtext")
+        logger.info("plone.richtext removed again")
         transaction.commit()
 
         # Rebuilding the catalog is necessary to prevent issues later on

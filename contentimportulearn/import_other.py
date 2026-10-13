@@ -343,7 +343,7 @@ class CustomImportOrdering(ImportOrdering):
                 ordered = IOrderedContainer(obj.__parent__, None)
                 if not ordered:
                     continue
-                ordered.moveObjectToPosition(obj.getId(), item["order"])
+                ordered.moveObjectToPosition(obj.getId(), item["order"], suppress_events=True)
                 if not index % 1000:
                     logger.info(
                         u"Ordered {} ({}%) of {} items".format(
