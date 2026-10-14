@@ -9,7 +9,13 @@ the redirect Plone answers to ``resolveuid/<UID>/@@images/...``.
 
 The exported lead ``image`` is dropped too: the Volto News Item has no
 ``plone.leadimage`` behavior. ``import_preview_image`` keeps it as a child
-Image linked through ``preview_image_link``, shown as an ``image`` block.
+Image linked through ``preview_image_link``.
+
+News Items and Events get the same blocks as when they are created in Volto
+(``volto-ushare6`` ``newsItemBlocks.ts`` / ``eventBlocks.ts``): a
+``usharePreviewImage`` block is always added, even without a preview image yet,
+so it shows up as soon as one is set; Events also get ``ushareEventMetadata``
+aligned right.
 """
 
 from Acquisition import aq_base
@@ -41,6 +47,7 @@ MIGRATION_BLOCK_TYPES = {
     "description",
     "leadimage",
     "image",
+    "usharePreviewImage",
     "ushareEventMetadata",
     "html",
     "slate",
@@ -171,6 +178,14 @@ def import_preview_image(obj, item):
     return child
 
 
+# Same defaults as the Volto initial blocks (``PREVIEW_IMAGE_BLOCK_DEFAULTS``).
+PREVIEW_IMAGE_BLOCK = {"@type": "usharePreviewImage", "align": "left", "size": "m"}
+EVENT_METADATA_BLOCK = {"@type": "ushareEventMetadata", "align": "right"}
+
+# Types laid out like Volto's News Item / Event initial blocks.
+PREVIEW_IMAGE_TYPES = ("News Item", "Event")
+
+
 def build_blocks(obj, html):
     """Return ``(blocks, blocks_layout)`` for ``obj``; ``html`` may be empty."""
     is_event = obj.portal_type == "Event"
@@ -186,6 +201,10 @@ def build_blocks(obj, html):
 
     if obj.portal_type == "News Item" and has_lead_image(obj):
         parts.append({"@type": "leadimage"})
+    elif obj.portal_type in PREVIEW_IMAGE_TYPES:
+        # Always present (empty until a preview image is set), it reads the
+        # image from ``preview_image_link``.
+        parts.append(dict(PREVIEW_IMAGE_BLOCK))
     else:
         image = preview_image(obj)
         if image is not None:
@@ -202,7 +221,8 @@ def build_blocks(obj, html):
             )
 
     if is_event:
-        parts.append({"@type": "ushareEventMetadata", "fixed": True, "required": True})
+        # Movable / removable, like in Volto (no ``fixed`` / ``required``).
+        parts.append(dict(EVENT_METADATA_BLOCK))
 
     if html:
         body = make_html_block(html)
