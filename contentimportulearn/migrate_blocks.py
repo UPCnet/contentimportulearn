@@ -11,11 +11,11 @@ The exported lead ``image`` is dropped too: the Volto News Item has no
 ``plone.leadimage`` behavior. ``import_preview_image`` keeps it as a child
 Image linked through ``preview_image_link``.
 
-News Items and Events get the same blocks as when they are created in Volto
-(``volto-ushare6`` ``newsItemBlocks.ts`` / ``eventBlocks.ts``): a
-``usharePreviewImage`` block is always added, even without a preview image yet,
-so it shows up as soon as one is set; Events also get ``ushareEventMetadata``
-aligned right.
+News Items and Events always get the same blocks as when they are created in
+Volto (``volto-ushare6`` ``newsItemBlocks.ts`` / ``eventBlocks.ts``), even
+without summary, preview image or body yet: title (fixed), description,
+``usharePreviewImage``, ``ushareEventMetadata`` aligned right (Events) and the
+body as an ``html`` block, or an empty text block when there is no body.
 """
 
 from Acquisition import aq_base
@@ -33,6 +33,7 @@ from ushare6_core.usharelayout.interfaces import COMMUNITY_PORTAL_TYPE
 from ushare6_core.usharelayout.layout_access import write_volto_center_blocks
 
 import base64
+import copy
 import re
 import transaction
 import uuid
@@ -182,8 +183,51 @@ def import_preview_image(obj, item):
 PREVIEW_IMAGE_BLOCK = {"@type": "usharePreviewImage", "align": "left", "size": "m"}
 EVENT_METADATA_BLOCK = {"@type": "ushareEventMetadata", "align": "right"}
 
-# Types laid out like Volto's News Item / Event initial blocks.
+# Types laid out like Volto's News Item / Event initial blocks: they always
+# get title, description, preview image (+ event metadata) and a text block,
+# even when the imported content has no summary, image or body yet.
 PREVIEW_IMAGE_TYPES = ("News Item", "Event")
+
+# Empty text block (same as the Volto initial ``slate`` block).
+EMPTY_TEXT_BLOCK = {
+    "@type": "slate",
+    "plaintext": "",
+    "value": [{"type": "p", "children": [{"text": ""}]}],
+}
+
+
+def structure_block_types(portal_type):
+    """Block types a News Item / Event must always have (``set()`` otherwise)."""
+    if portal_type not in PREVIEW_IMAGE_TYPES:
+        return set()
+    types = {"title", "description", "usharePreviewImage"}
+    if portal_type == "Event":
+        types.add("ushareEventMetadata")
+    return types
+
+
+def has_full_structure(obj):
+    """``True`` when a News Item / Event needs no rebuild: it already has all its
+    structure blocks and a text block (``html`` or ``slate``), or it has text
+    written in Volto."""
+    required = structure_block_types(obj.portal_type)
+    if not required:
+        return True
+    blocks = getattr(aq_base(obj), "blocks", None) or {}
+    layout = getattr(aq_base(obj), "blocks_layout", None) or {}
+    types = {
+        (blocks.get(block_id) or {}).get("@type")
+        for block_id in layout.get("items") or []
+    }
+    if required <= types and bool(types & {"html", "slate"}):
+        return True
+    # Text written in Volto (non-empty ``slate``): never rebuilt, even if the
+    # editor removed some structure block on purpose.
+    return any(
+        (blocks.get(block_id) or {}).get("@type") == "slate"
+        and ((blocks.get(block_id) or {}).get("plaintext") or "").strip()
+        for block_id in layout.get("items") or []
+    )
 
 
 def build_blocks(obj, html):
@@ -191,12 +235,15 @@ def build_blocks(obj, html):
     is_event = obj.portal_type == "Event"
     parts = []
 
+    structured = obj.portal_type in PREVIEW_IMAGE_TYPES
+
     title = {"@type": "title"}
-    if is_event:
+    if structured:
         title.update({"fixed": True, "required": True})
     parts.append(title)
 
-    if (obj.description or "").strip():
+    # News / Events: always, to be filled later if the content has none yet.
+    if structured or (obj.description or "").strip():
         parts.append({"@type": "description"})
 
     if obj.portal_type == "News Item" and has_lead_image(obj):
@@ -228,6 +275,8 @@ def build_blocks(obj, html):
         body = make_html_block(html)
         body["searchableText"] = plain_text(html)
         parts.append(body)
+    elif structured:
+        parts.append(copy.deepcopy(EMPTY_TEXT_BLOCK))
 
     blocks = {}
     items = []
@@ -282,8 +331,9 @@ def migrate_richtext_to_blocks(
             continue
         html = resolve_image_srcs(clean_html(get_richtext(obj, fieldname)))
         has_layout = bool((getattr(aq_base(obj), "blocks_layout", None) or {}).get("items"))
-        if not html and has_layout:
+        if not html and has_layout and has_full_structure(obj):
             # Nothing to add and the object already has its own blocks
+            # (News / Events: only once they have their whole structure)
             skipped += 1
             continue
         if not html:
