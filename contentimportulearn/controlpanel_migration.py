@@ -27,6 +27,7 @@ LEGACY_POPUP = "ulearn5.core.controlpopup.IPopupSettings"
 LEGACY_PORTLETS = "ulearn5.core.controlportlets.IPortletsSettings"
 LEGACY_MAIL = "plone.app.controlpanel.mail.IMailSchema"
 LEGACY_SITE = "plone.app.controlpanel.site.ISiteSchema"
+LEGACY_BLANQUERNA = "ulearn5.blanquerna.controlpanel.IBlanquernaSettings"
 
 # MAX connection + public site URL: keep values from create_site_import / customizeme.cfg.
 # Local migration: Mongo already has PRE contexts; @@import_all skips MAX sync and
@@ -238,6 +239,27 @@ def import_legacy_controlpanels(data):
         skip=POPUP_SKIP,
     )
     summary["popup"] = {"imported": imported, "skipped": skipped}
+
+    blanquerna_values = panels.get(LEGACY_BLANQUERNA) or {}
+    if blanquerna_values:
+        try:
+            from ushare6_blanquerna.controlpanel import IBlanquernaSettings
+        except ImportError:
+            logger.warning(
+                "Skipping %s — ushare6_blanquerna is not installed.",
+                LEGACY_BLANQUERNA,
+            )
+            summary["blanquerna"] = {
+                "imported": [],
+                "skipped": list(blanquerna_values),
+            }
+        else:
+            imported, skipped = _apply_registry_values(
+                registry,
+                IBlanquernaSettings,
+                blanquerna_values,
+            )
+            summary["blanquerna"] = {"imported": imported, "skipped": skipped}
 
     if panels.get(LEGACY_PORTLETS):
         logger.info(

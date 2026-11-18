@@ -12,6 +12,8 @@ from datetime import datetime
 from datetime import timedelta
 from plone import api
 from plone.base.interfaces import IPloneSiteRoot
+from plone.app.textfield.interfaces import IRichText
+from plone.app.textfield.value import RichTextValue
 from plone.dexterity.interfaces import IDexterityFTI
 from plone.dexterity.utils import iterSchemata
 from plone.restapi.interfaces import IDeserializeFromJson
@@ -24,6 +26,7 @@ from zope.schema import getFields
 from plone.memoize import ram
 from time import time
 
+import base64
 import dateutil
 import ijson
 import json
@@ -40,6 +43,44 @@ from ushare6_core.usharelayout.interfaces import COMMUNITY_PORTAL_TYPE
 from ushare6_core.max import max_sync_suppressed, set_max_sync_suppressed
 
 logger = logging.getLogger(__name__)
+
+
+def is_exported_blob(value):
+    """True for the ``{"content-type", "data", ...}`` dict collective.exportimport
+    writes for rich text and file/image fields."""
+    return (
+        isinstance(value, dict)
+        and "data" in value
+        and "content-type" in value
+    )
+
+
+def coerce_exported_value(obj, name, value):
+    """Turn an exported rich text dict into a ``RichTextValue``.
+
+    The restapi deserializer does this for each field, but the recovery paths
+    assign values with ``setattr``. A raw dict left in a rich text field breaks
+    the SearchableText indexer ("Can not convert {...} to an IRichTextValue")
+    and aborts the whole import. Anything else is returned unchanged.
+    """
+    if not is_exported_blob(value) or not str(value["content-type"]).startswith(
+        "text/"
+    ):
+        return value
+    output_mime_type = None
+    for schema in iterSchemata(obj):
+        field = schema.get(name)
+        if IRichText.providedBy(field):
+            output_mime_type = field.output_mime_type
+            break
+    if output_mime_type is None and name != "text":
+        return value
+    return RichTextValue(
+        raw=value["data"],
+        mimeType=value["content-type"],
+        outputMimeType=output_mime_type or "text/x-html-safe",
+        encoding=value.get("encoding") or "utf-8",
+    )
 
 
 def fallback_title(content_id):
@@ -97,10 +138,10 @@ IMPORTED_TYPES = [
     "AppFile",
     "AppImage",
     "Interaccio",
-    "ulearn.abacus.location",
-    "ulearn.abacus.ubication",
-    "ulearn.abacus.area",
-    "ulearn.abacus.work_placement",
+    "Services",
+    "Flash_informativo",
+    "Link_Communities",
+    "Event_Communities",
 ]
 
 ALLOWED_TYPES = [
@@ -129,10 +170,6 @@ ALLOWED_TYPES = [
     "AppFile",
     "AppImage",
     "Interaccio",
-    "ulearn.abacus.location",
-    "ulearn.abacus.ubication",
-    "ulearn.abacus.area",
-    "ulearn.abacus.work_placement",
     "ulearn.affiliate",
     "CholPeptide",
     "CholPeptideShipment",
@@ -146,6 +183,10 @@ ALLOWED_TYPES = [
     "Operator",
     "ReactorReference",
     "ResearchGroup",
+    "Services",
+    "Flash_informativo",
+    "Link_Communities",
+    "Event_Communities",
 ]
 
 CUSTOMVIEWFIELDS_MAPPING = {
@@ -184,6 +225,19 @@ NANOMOL_DEFERRED_FIELDS = {
         "addressee",
     ),
 }
+
+# Blanquerna: typeService is bound to the services_catalog_blanquerna soup,
+# empty until the catalog is synced from the Blanquerna API. faculty and
+# collective are required in ushare6 but some exported items have them empty.
+BLANQUERNA_DEFERRED_FIELDS = {
+    "Services": ("typeService",),
+    "News Item": ("faculty", "collective"),
+    "Event": ("faculty", "collective"),
+    "Link": ("collective",),
+}
+
+DEFERRED_VOCABULARY_FIELDS = dict(NANOMOL_DEFERRED_FIELDS)
+DEFERRED_VOCABULARY_FIELDS.update(BLANQUERNA_DEFERRED_FIELDS)
 
 IMPORT_PAYLOAD_SKIP_KEYS = frozenset(
     {
@@ -578,7 +632,7 @@ class CustomImportContent(ImportContent):
 
     def _defer_nanomol_vocabulary_fields(self, item):
         portal_type = fix_portal_type(item.get("@type", ""))
-        field_names = NANOMOL_DEFERRED_FIELDS.get(portal_type)
+        field_names = DEFERRED_VOCABULARY_FIELDS.get(portal_type)
         if not field_names:
             return item
         deferred = dict(item.get(DEFERRED_FIELDS_KEY, {}))
@@ -599,7 +653,7 @@ class CustomImportContent(ImportContent):
             return
         for name, value in deferred.items():
             try:
-                setattr(obj, name, value)
+                setattr(obj, name, coerce_exported_value(obj, name, value))
             except Exception:
                 logger.warning(
                     "Could not set deferred field %s on %s",
@@ -619,6 +673,8 @@ class CustomImportContent(ImportContent):
 
         filename = image.get("filename") or image.get("content-type") or "image"
         try:
+            if image.get("encoding") == "base64":
+                data = base64.b64decode(data)
             obj.image = NamedBlobImage(data=data, filename=filename)
             return True
         except Exception:
@@ -636,6 +692,11 @@ class CustomImportContent(ImportContent):
             if key in IMPORT_PAYLOAD_SKIP_KEYS or key.startswith("@"):
                 continue
             if key in ("image", "file", "financial_entity") and isinstance(value, dict):
+                continue
+            value = coerce_exported_value(obj, key, value)
+            if is_exported_blob(value):
+                # file/image dict (e.g. thumbnail_image): a raw dict is not a
+                # NamedBlob and would corrupt the field
                 continue
             try:
                 setattr(obj, key, value)
@@ -776,6 +837,14 @@ class CustomImportContent(ImportContent):
         return uuid
 
     def global_dict_hook(self, item):
+        # _createObjectByType runs outside the per-item try in
+        # import_new_content: an unknown type would abort the whole import.
+        portal_type = PORTAL_TYPE_MAPPING.get(item["@type"], item["@type"])
+        if api.portal.get_tool("portal_types").getTypeInfo(portal_type) is None:
+            logger.warning(
+                "Skipping %s %s: type not installed", item["@type"], item["@id"]
+            )
+            return
         item = self._rewrite_item_legacy_urls(item)
 
         # update constraints
@@ -1105,7 +1174,9 @@ class CustomImportContent(ImportContent):
             ):
                 for field in ("sponsor_address", "recipient_address"):
                     if field in item:
-                        setattr(new, field, item[field])
+                        setattr(
+                            new, field, coerce_exported_value(new, field, item[field])
+                        )
             else:
                 self._recover_deserialize_failure(new, item, e)
 
